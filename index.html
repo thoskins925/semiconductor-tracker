@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b1220" />
+  <title>Semiconductor Learning Tool</title>
+  <meta name="description" content="An educational, fake-money tool for learning how to read semiconductor stocks — probability and risk, never prediction." />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- One-time disclaimer (educational, not financial advice) -->
+  <div id="disclaimer" class="modal" hidden>
+    <div class="modal-card">
+      <h2>Before you start — read this once</h2>
+      <p>This is a <strong>learning tool</strong>. It uses <strong>fake money</strong> and real-but-delayed daily market data to teach how people <em>read</em> semiconductor stocks.</p>
+      <p>It talks in terms of <strong>probability and risk, never prediction</strong>. Nothing here is financial advice, and no indicator tells you what a stock will do next. Markets surprise everyone.</p>
+      <p>Use it to build intuition and to learn the vocabulary — not to make real trades.</p>
+      <label class="dismiss-row"><input type="checkbox" id="dontShowAgain" /> Don't show this again on this device</label>
+      <button id="acceptDisclaimer" class="btn btn-primary">I understand — let's learn</button>
+    </div>
+  </div>
+
+  <header class="app-header">
+    <div class="brand">
+      <span class="chip-mark" aria-hidden="true"></span>
+      <div>
+        <h1>Semiconductor Learning Tool</h1>
+        <p class="tagline">Probability &amp; risk — never prediction. Fake money, real lessons.</p>
+      </div>
+    </div>
+    <div class="data-status">
+      <span class="dot" id="dataDot"></span>
+      <span id="dataAsOf">Loading data…</span>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-view="changed" role="tab">What changed</button>
+    <button class="tab" data-view="portfolio" role="tab">Practice portfolio</button>
+    <button class="tab" data-view="web" role="tab">Influence web</button>
+  </nav>
+
+  <main id="main">
+    <!-- VIEW: What changed -->
+    <section class="view active" id="view-changed">
+      <div class="view-head">
+        <h2>What changed since you were last here</h2>
+        <p class="muted">Because the data accrues in the cloud every weekday, you see every move — including the days you were away.</p>
+      </div>
+      <div class="window-picker" id="windowPicker">
+        <span class="muted">Window:</span>
+        <button class="pill active" data-window="1">1 day</button>
+        <button class="pill" data-window="5">5 days</button>
+        <button class="pill" data-window="21">1 month</button>
+      </div>
+      <div class="card-grid" id="changedGrid"></div>
+    </section>
+
+    <!-- VIEW: Practice portfolio -->
+    <section class="view" id="view-portfolio" hidden>
+      <div class="view-head">
+        <h2>Practice portfolio <span class="badge">fake money</span></h2>
+        <p class="muted">Buy, hold, and sell at the latest daily close from the live data file. Fractional shares allowed.</p>
+      </div>
+
+      <div class="portfolio-summary" id="portfolioSummary"></div>
+
+      <div class="trade-row">
+        <select id="tradeTicker"></select>
+        <input type="number" id="tradeDollars" placeholder="$ amount" min="0" step="0.01" />
+        <button class="btn btn-buy" id="btnBuy">Buy</button>
+        <button class="btn btn-sell" id="btnSell">Sell</button>
+        <button class="btn btn-ghost" id="btnReset" title="Reset to starting balance">Reset</button>
+      </div>
+      <div class="seed-row">
+        <label>Starting balance $
+          <input type="number" id="seedBalance" min="100" step="100" value="10000" />
+        </label>
+        <button class="btn btn-ghost" id="btnApplySeed">Apply &amp; reset</button>
+      </div>
+
+      <div id="holdingsTableWrap"></div>
+
+      <div class="learn-block">
+        <h3>Read the signals — each with confidence and how it fails</h3>
+        <p class="muted">Pick a ticker above, then expand a signal to see what it suggests today, how confident that read is, and the way it commonly misleads.</p>
+        <div id="signalsAccordion"></div>
+      </div>
+
+      <div class="learn-block">
+        <h3>If you sold today: short- vs long-term gains</h3>
+        <p class="muted">A reminder of why holding period matters. Illustrative US framing — not tax advice.</p>
+        <div id="gainsCompare"></div>
+      </div>
+
+      <div class="deferred">
+        <h4>Deliberately not built (yet)</h4>
+        <p>Options, short selling, and position sizing are <strong>deferred</strong>. They add real risk concepts that deserve their own careful treatment. This tool stays long-only and cash-based on purpose.</p>
+      </div>
+    </section>
+
+    <!-- VIEW: Influence web -->
+    <section class="view" id="view-web" hidden>
+      <div class="view-head">
+        <h2>Influence web</h2>
+        <p class="muted">Nodes are colored by their <strong>real</strong> recent trend. <span class="legend-solid">Solid lines</span> are documented relationships; <span class="legend-dash">dashed lines</span> are hypothesized and labeled — no invented causation. Tap a node to learn.</p>
+      </div>
+      <div class="web-wrap">
+        <svg id="webSvg" viewBox="0 0 1000 680" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Influence web of semiconductor stocks and drivers"></svg>
+      </div>
+      <div id="webInfo" class="web-info muted">Tap any node to read about it.</div>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <span id="footerSource">—</span>
+    <span class="sep">•</span>
+    <span>Educational use only — not financial advice.</span>
+  </footer>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
