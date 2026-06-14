@@ -1,0 +1,48 @@
+name: Update market data
+
+on:
+  schedule:
+    - cron: "30 21 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      force_backfill:
+        description: "Force a full 180-day refetch for every ticker"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-data
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Fetch latest bars and update history.json
+        env:
+          TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+          FORCE_BACKFILL: ${{ github.event.inputs.force_backfill == 'true' && '1' || '' }}
+        run: node scripts/fetch.js
+
+      - name: Commit history.json if it changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- history.json; then
+            echo "No changes to history.json — nothing to commit (weekend/holiday or already current)."
+          else
+            git add history.json
+            git commit -m "data: update history.json ($(date -u +%Y-%m-%d))"
+            git push
+          fi
