@@ -40,6 +40,7 @@
   <nav class="tabs" role="tablist">
     <button class="tab active" data-view="changed" role="tab">What changed</button>
     <button class="tab" data-view="portfolio" role="tab">Practice portfolio</button>
+    <button class="tab" data-view="orders" role="tab">Planned orders<span class="tab-badge" id="ordersBadge" hidden></span></button>
     <button class="tab" data-view="web" role="tab">Influence web</button>
   </nav>
 
@@ -99,6 +100,60 @@
       <div class="deferred">
         <h4>Deliberately not built (yet)</h4>
         <p>Options, short selling, and position sizing are <strong>deferred</strong>. They add real risk concepts that deserve their own careful treatment. This tool stays long-only and cash-based on purpose.</p>
+      </div>
+    </section>
+
+    <!-- VIEW: Planned orders -->
+    <section class="view" id="view-orders" hidden>
+      <div class="view-head">
+        <h2>Planned orders <span class="badge">fake money</span></h2>
+        <p class="muted">Set a buy or sell to fire later — at a price level or on a date. Each time you open the app it replays the daily bars you missed and reports what filled while you were away. Fills are modeled on daily highs/lows, so a gap through your level fills at that day's open (realistic slippage) — not magically at your price.</p>
+      </div>
+
+      <div id="awayReport"></div>
+
+      <div class="learn-block">
+        <h3>Plan an order</h3>
+        <div class="order-form">
+          <div class="of-row">
+            <label>Ticker
+              <select id="orderTicker"></select>
+            </label>
+            <label>Action
+              <select id="orderSide"><option value="buy">Buy</option><option value="sell">Sell</option></select>
+            </label>
+            <label>Amount $
+              <input type="number" id="orderDollars" min="0" step="0.01" placeholder="$ amount" />
+            </label>
+          </div>
+          <div class="of-row">
+            <label>Trigger
+              <select id="orderTrigger"><option value="below">When price falls to / below</option><option value="above">When price rises to / above</option><option value="date">On or after a date</option></select>
+            </label>
+            <label id="orderLevelWrap">Price $
+              <input type="number" id="orderLevel" min="0" step="0.01" placeholder="price level" />
+            </label>
+            <label id="orderDateWrap" hidden>Date
+              <input type="date" id="orderDate" />
+            </label>
+          </div>
+          <div class="of-row">
+            <label class="grow">Why (your thesis — required)
+              <input type="text" id="orderNote" maxlength="120" placeholder="e.g. buying the dip below support" />
+            </label>
+            <button class="btn btn-primary" id="btnAddOrder">Add planned order</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="learn-block">
+        <h3>Pending orders <span class="muted" id="pendingCount"></span></h3>
+        <div id="pendingList"></div>
+      </div>
+
+      <div class="learn-block">
+        <h3>Order history</h3>
+        <div id="orderHistory"></div>
       </div>
     </section>
 

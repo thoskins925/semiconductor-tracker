@@ -8,7 +8,7 @@
  *     lets the installed app still show the accrued history with no signal.
  *
  * Bump CACHE_VERSION whenever you change the shell files to force an update. */
-const CACHE_VERSION = 'semi-learn-v1';
+const CACHE_VERSION = 'semi-learn-v2';
 const SHELL = [
   './',
   './index.html',

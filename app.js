@@ -21,11 +21,16 @@ const store = {
 const STATE = {
   data: null,        // parsed history.json
   closes: {},        // ticker -> [close]
+  opens: {},         // ticker -> [open]   (falls back to close if absent)
+  highs: {},         // ticker -> [high]   (falls back to close if absent)
+  lows: {},          // ticker -> [low]    (falls back to close if absent)
   dates: {},         // ticker -> [date]
   vols: {},          // ticker -> [volume]
   window: 1,         // change-view window in trading days
   selectedNode: null,
   portfolio: null,   // {seed, cash, positions:{t:{shares,cost}}}
+  orders: [],        // planned orders
+  reportEvents: [],  // fills/skips from the most recent replay (the "while away" report)
 };
 
 /* ============================================================
@@ -115,6 +120,12 @@ async function loadData() {
     STATE.closes[t] = s.map((b) => b.close);
     STATE.dates[t] = s.map((b) => b.date);
     STATE.vols[t] = s.map((b) => b.volume);
+    // Keep OHLC for trigger evaluation. The deployed (Twelve Data) feed has
+    // open/high/low; if a slimmed feed lacks them, fall back to close so the
+    // app still works (triggers just lose intraday gap/touch nuance).
+    STATE.opens[t] = s.map((b) => (b.open != null ? b.open : b.close));
+    STATE.highs[t] = s.map((b) => (b.high != null ? b.high : b.close));
+    STATE.lows[t] = s.map((b) => (b.low != null ? b.low : b.close));
   }
   // header status
   const asOf = data.as_of || '—';
@@ -469,6 +480,196 @@ function selectNode(name) {
 }
 
 /* ============================================================
+ *  VIEW: PLANNED ORDERS  (client-side, daily-bar replay)
+ * ============================================================ */
+function loadOrders() {
+  try { const r = store.get('plannedOrders'); STATE.orders = r ? JSON.parse(r) : []; }
+  catch { STATE.orders = []; }
+}
+function saveOrders() { store.set('plannedOrders', JSON.stringify(STATE.orders)); }
+function getLastSeen() { return store.get('lastSeenAsOf'); }
+function setLastSeen(d) { store.set('lastSeenAsOf', d); }
+
+/** Full bar for a ticker on a date, or null. Missing OHLC falls back to close. */
+function barOn(t, date) {
+  const i = STATE.dates[t] ? STATE.dates[t].indexOf(date) : -1;
+  if (i < 0) return null;
+  const close = STATE.closes[t][i];
+  return { open: STATE.opens[t][i] ?? close, high: STATE.highs[t][i] ?? close, low: STATE.lows[t][i] ?? close, close };
+}
+
+/** Sorted union of all trading dates strictly after `lastSeen` (and <= as_of). */
+function tradingDatesAfter(lastSeen) {
+  const set = new Set();
+  for (const t of STATE.data.tickers) for (const d of STATE.dates[t]) set.add(d);
+  return [...set].sort().filter((d) => (!lastSeen || d > lastSeen));
+}
+
+/** Does this order fire on this day's bar? Returns {fire, fillPrice, reason}.
+ *  Realistic model: if the day OPENED through your level (a gap), you fill at
+ *  the open (slippage); otherwise the price reached your level intraday and you
+ *  fill at the level. A date order fills at that day's open. */
+function evalTrigger(o, bar, d) {
+  if (o.trigger === 'date') {
+    return d >= o.date ? { fire: true, fillPrice: bar.open, reason: 'scheduled' } : { fire: false };
+  }
+  if (o.trigger === 'below') {
+    if (bar.low <= o.level) { const gap = bar.open <= o.level; return { fire: true, fillPrice: gap ? bar.open : o.level, reason: gap ? 'gap' : 'touched' }; }
+    return { fire: false };
+  }
+  if (o.trigger === 'above') {
+    if (bar.high >= o.level) { const gap = bar.open >= o.level; return { fire: true, fillPrice: gap ? bar.open : o.level, reason: gap ? 'gap' : 'touched' }; }
+    return { fire: false };
+  }
+  return { fire: false };
+}
+
+/** Execute a fired order against the fake-money portfolio. Records a report event. */
+function executePlanned(o, price, date, reason) {
+  const pf = STATE.portfolio;
+  let ok = true, detail = '';
+  if (o.side === 'buy') {
+    if (o.dollars > pf.cash + 1e-6) { ok = false; detail = 'not enough cash'; }
+    else {
+      const shares = o.dollars / price;
+      const pos = pf.positions[o.ticker] || { shares: 0, cost: 0 };
+      pos.cost += o.dollars; pos.shares += shares; pf.positions[o.ticker] = pos; pf.cash -= o.dollars;
+      detail = `bought ${shares.toFixed(4)} sh`;
+    }
+  } else {
+    const pos = pf.positions[o.ticker];
+    if (!pos || pos.shares <= 0) { ok = false; detail = 'no shares to sell'; }
+    else {
+      const held = pos.shares * price;
+      const sellDollars = Math.min(o.dollars, held);
+      const sharesSold = sellDollars / price;
+      const fraction = sharesSold / pos.shares;
+      pos.cost -= pos.cost * fraction; pos.shares -= sharesSold; pf.cash += sellDollars;
+      if (pos.shares < 1e-9) delete pf.positions[o.ticker];
+      detail = `sold ${sharesSold.toFixed(4)} sh`;
+    }
+  }
+  if (ok) { o.status = 'filled'; o.filledDate = date; o.fillPrice = price; o.fillReason = reason; }
+  else { o.status = 'skipped'; o.filledDate = date; o.fillReason = 'skip'; o.skipDetail = detail; }
+  STATE.reportEvents.push({ date, ok, side: o.side, dollars: o.dollars, ticker: o.ticker, note: o.note, price, reason: ok ? reason : 'skip', detail });
+}
+
+/** Walk every daily bar missed since the last open and fire any triggered orders. */
+function replayMissedBars() {
+  STATE.reportEvents = [];
+  const asOf = STATE.data.as_of;
+  const lastSeen = getLastSeen();
+  if (!lastSeen) { setLastSeen(asOf); return; }   // first visit ever — nothing was missed
+  if (lastSeen >= asOf) return;                    // already current
+  for (const d of tradingDatesAfter(lastSeen)) {
+    for (const o of STATE.orders) {
+      if (o.status !== 'pending') continue;
+      if (o.createdAsOf && d <= o.createdAsOf) continue; // only fire on bars after the order was placed
+      const bar = barOn(o.ticker, d);
+      if (!bar) continue;
+      const res = evalTrigger(o, bar, d);
+      if (res.fire) executePlanned(o, res.fillPrice, d, res.reason);
+    }
+  }
+  setLastSeen(asOf);
+  saveOrders();
+  savePortfolio();
+}
+
+function reasonText(reason, detail) {
+  switch (reason) {
+    case 'gap': return '(gapped through your level → filled at the open: slippage)';
+    case 'touched': return '(price reached your level that day)';
+    case 'scheduled': return '(scheduled date reached → filled at the open)';
+    case 'skip': return '(not filled — ' + (detail || 'could not execute') + ')';
+    default: return '';
+  }
+}
+
+function renderAwayReport() {
+  const el = $('#awayReport');
+  const evs = STATE.reportEvents;
+  if (!evs || !evs.length) { el.innerHTML = ''; return; }
+  el.innerHTML = `<div class="away-report"><h3>While you were away — ${evs.length} planned order${evs.length > 1 ? 's' : ''} acted</h3>` +
+    evs.map((e) => `<div class="ev"><span class="when">${e.date}</span> — <strong>${e.ok ? (e.side === 'buy' ? 'Bought' : 'Sold') : 'Skipped'}</strong> ${fmtUSD(e.dollars)} ${e.ticker}${e.ok ? ` @ ${fmtUSD(e.price)}` : ''} <span class="reason-${e.reason === 'skip' ? 'skip' : e.reason === 'gap' ? 'gap' : 'touched'}">${reasonText(e.reason, e.detail)}</span>${e.note ? `<div class="why">“${e.note}”</div>` : ''}</div>`).join('') +
+    `</div>`;
+}
+
+function orderRow(o, cancellable) {
+  const cond = o.trigger === 'date' ? `on/after ${o.date}` : (o.trigger === 'below' ? `if ≤ ${fmtUSD(o.level)}` : `if ≥ ${fmtUSD(o.level)}`);
+  const head = `<strong>${o.side === 'buy' ? 'Buy' : 'Sell'} ${fmtUSD(o.dollars)} ${o.ticker}</strong> <span class="tag">${cond}</span>`;
+  let status = '';
+  if (o.status === 'filled') status = `<div class="why">Filled ${o.filledDate} @ ${fmtUSD(o.fillPrice)} ${reasonText(o.fillReason)}</div>`;
+  else if (o.status === 'skipped') status = `<div class="why reason-skip">Skipped ${o.filledDate} — ${o.skipDetail}</div>`;
+  else if (o.status === 'canceled') status = `<div class="why">Canceled.</div>`;
+  return `<div class="order-item"><div>${head}${o.note ? `<div class="why">“${o.note}”</div>` : ''}${status}</div>${cancellable ? `<button class="btn-mini" data-id="${o.id}">Cancel</button>` : ''}</div>`;
+}
+
+function renderPending() {
+  const pend = STATE.orders.filter((o) => o.status === 'pending');
+  $('#pendingCount').textContent = pend.length ? `(${pend.length})` : '(none)';
+  const badge = $('#ordersBadge');
+  if (pend.length) { badge.hidden = false; badge.textContent = pend.length; } else badge.hidden = true;
+  $('#pendingList').innerHTML = pend.length
+    ? pend.map((o) => orderRow(o, true)).join('')
+    : `<p class="muted">No pending orders. Plan one above — it'll fire on a future day's data and report back here.</p>`;
+  $$('#pendingList .btn-mini').forEach((b) => b.addEventListener('click', () => cancelOrder(b.dataset.id)));
+}
+
+function renderHistory() {
+  const done = STATE.orders.filter((o) => o.status !== 'pending');
+  $('#orderHistory').innerHTML = done.length
+    ? done.slice().reverse().map((o) => orderRow(o, false)).join('')
+    : `<p class="muted">No filled, skipped, or canceled orders yet.</p>`;
+}
+
+function addOrder() {
+  const t = $('#orderTicker').value, side = $('#orderSide').value, trigger = $('#orderTrigger').value;
+  const dollars = parseFloat($('#orderDollars').value);
+  const note = $('#orderNote').value.trim();
+  if (!(dollars > 0)) return toast('Enter a dollar amount.');
+  if (!note) return toast('Add a short "why" — committing to a thesis is the point.');
+  const o = { id: 'o' + Date.now() + Math.floor(Math.random() * 1000), ticker: t, side, trigger, dollars, note, status: 'pending', createdAsOf: STATE.data.as_of };
+  if (trigger === 'date') {
+    const dt = $('#orderDate').value;
+    if (!dt) return toast('Pick a date.');
+    o.date = dt;
+  } else {
+    const lvl = parseFloat($('#orderLevel').value);
+    if (!(lvl > 0)) return toast('Enter a price level.');
+    o.level = lvl;
+  }
+  STATE.orders.push(o); saveOrders();
+  $('#orderDollars').value = ''; $('#orderLevel').value = ''; $('#orderNote').value = '';
+  renderPending(); renderHistory();
+  toast('Planned order added.');
+}
+
+function cancelOrder(id) {
+  const o = STATE.orders.find((x) => x.id === id);
+  if (o) { o.status = 'canceled'; saveOrders(); renderPending(); renderHistory(); toast('Order canceled.'); }
+}
+
+function initOrders() {
+  loadOrders();
+  $('#orderTicker').innerHTML = STATE.data.tickers.map((t) => `<option value="${t}">${t} — ${fmtUSD(latestPrice(t))}</option>`).join('');
+  const trig = $('#orderTrigger');
+  const syncInputs = () => {
+    const isDate = trig.value === 'date';
+    $('#orderLevelWrap').hidden = isDate;
+    $('#orderDateWrap').hidden = !isDate;
+  };
+  trig.addEventListener('change', syncInputs); syncInputs();
+  $('#btnAddOrder').addEventListener('click', addOrder);
+
+  replayMissedBars();   // fire anything triggered while the app was closed
+  renderAwayReport();
+  renderPending();
+  renderHistory();
+  renderPortfolio();    // reflect any fills in the portfolio view
+}
+
+/* ============================================================
  *  TABS, TOAST, DISCLAIMER, PWA
  * ============================================================ */
 function initTabs() {
@@ -519,7 +720,7 @@ async function boot() {
     await loadData();
     renderChanged();
     initPortfolio();
-    // web builds lazily when its tab opens, but prime selection text
+    initOrders();
     $('#webInfo').textContent = 'Tap any node to read about it.';
   } catch (e) {
     $('#dataAsOf').textContent = 'Could not load data';
